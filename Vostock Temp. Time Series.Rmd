@@ -1,0 +1,622 @@
+---
+title: "VTTS"
+author: "Weronika Blonska and Aleksander Lorenc"
+date: "2024-01-20"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# The time series of temperature from the Vostock station
+
+Vostock (ros. Восто́к - "East") - is a Russian research station located in Antarctica. Vostok Station was established on 16 December 1957.
+
+In our project we build an ARIMA model in order to explain the time series of monthly mean temperatures measured at the Vostock station. The very first record comes from January 1958, while the last one - from December 2023. The data comes from the website <https://www.bas.ac.uk/>. We decide to replace single missing records with the arithmetic mean of the previous one and the next one. The intervals of more than one missing value are to be replaced by forecasts made with models built on the previous parts of time series.
+
+```{r, comment=FALSE, echo=FALSE}
+library("openxlsx")
+library("tseries")
+library("TSA")
+library("zoo")
+library("forecast")
+library("tibble")
+library("ggplot2")
+library("stats")
+```
+
+```{r, echo=TRUE, comment=FALSE}
+# DATA SET
+data <- read.xlsx("VTTS_Data.xlsx")
+temp<-data$Temp
+temp<-as.numeric(temp)
+time<-data$TIME_English
+```
+
+# Preparing the data set
+
+Below we can find some basic statistics for the time series of temperature.
+
+```{r, echo=FALSE}
+summary(temp) 
+```
+
+As we can observe, the temperatures are very low (from -75.2 to -25.1). In further part of the project we are going to check precisely, where in the time series there are some missing observations, and supply them with some values.
+
+```{r,echo=FALSE}
+#plot(temp)
+par(mfrow=c(1,1),col="green", las=2)
+plot(temp,type="l",col="darkgreen",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temp),by=36)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+At the above plot we can observe the intervals of missing records. What is more, strong seasonality could be observed here.
+
+Now we are going to find empty records by their indices in time series.
+
+```{r, echo=TRUE}
+# LOOKING FOR NANs
+l<-length(temp)
+i=1
+while(i<=l){if(is.na(temp[i])){print(i)};i=i+1}
+```
+
+Since there are only 46 missing values, we can simply find their indices in the list printed above. First lack is a single record (index 25), so we are going to replace it with average of the 24th and 26th values.
+
+```{r,echo=TRUE}
+temp[25]=0.5*temp[24]+0.5*temp[26]
+```
+
+Next empty parts of the series are intervals of 10 (or around 10) indices length. For every such interval we are going to make some forecast. To do so, we need models built on the records from the very beginning of the series to the very last value just before the lack.
+
+## Data supplementation - part 1
+
+The missing-values-forecasting models are to be built in the simplest way (auto.arima function). More precise work is going to be made when it comes to the full-data model.
+
+```{r, echo=TRUE}
+# DATA BEFORE FIRST BLANK
+temps1<-temp[1:36] #temp short vector number 1
+times1<-time[1:36] #date short vector number 1
+```
+
+This is the plot of the temperature for the beginning years:
+
+```{r, echo=FALSE}
+par(mfrow=c(1,1),col="green", las=2)
+plot(temps1,type="l",col="purple",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temps1),by=2)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=times1[scale])
+axis(2)
+```
+
+Now we are going to find the parameters of the AR and MA parts of the model.
+
+```{r,echo=FALSE}
+acf(temps1,36,drop.lag.0 = TRUE)       # q parameter for MA(q)
+# 36 observations = 36 months = 3 years
+```
+
+```{r,echo=FALSE}
+pacf(temps1,36)                       # pparameter for AR(p)
+```
+
+The rank of the AR part of the model can be given as number of the last lag (in the PACF plot above) that stands out of the blue scatter lines. Analogically, the rank of the MA part of the model can be obtained from the ACF plot. Unfortunately, the above AutoCorrelation Function decreases quite late. In order not to get too great rank for MA,we are going to calculate the maximal acceptable rank as the natural logarithm of the number of observations. Since there are 48 records given for now, we need to calculate $log(48)$.
+
+```{r,echo=TRUE}
+log(48)
+```
+
+According to the above plots and the logarithm value, the highest acceptable model is ARMA(2,3). Now we are going to check, if it is not an ARIMA model. To do so, we use a specific function that calculates the value of the "d" parameter in ARIMA(p,d,q) model.
+
+```{r}
+ndiffs(temps1)
+```
+
+Since d=0, we decide to use ARMA model.
+
+The function below returns the best ARMA(p,g) model for p=0,1,2 and q=0,1,2,3,according to the Akaike criterion.
+
+```{r, echo=FALSE}
+temps1.autoARMA<-auto.arima(temps1,d=0,max.p=2,max.q=3,stepwise=TRUE,ic="aic")#stepwise = TRUE;ic = c("aicc", "aic", "bic")
+par(mfrow = c(1, 1))
+print(temps1.autoARMA)
+```
+
+Using the temps1.autoARMA model we are going to forecast next 13 values in order to supply the missing observations.
+
+```{r,echo=FALSE}
+plot(forecast(temps1.autoARMA,h=13)) 
+```
+
+The forecasted values do not meet our expectations, intuition and simple logic. They should not differ so much from the respective values in previous years. Explanation of this fact might be very simple: the beginning data set is too small for this ARMA model to learn good enough. We are going to check this hypothesis, when building and using the next model - it is to be trained on a quite larger data set.
+
+Now we are going to fill the gap in data with our forecast and find the next one (observation 435th).
+
+```{r, echo=TRUE}
+forec1<-forecast(temps1.autoARMA,h=13)$mean
+temps2<-temp[1:434]
+l<-length(forec1)
+i=1
+while(i<=l){temps2[48+i]=forec1[i];temp[48+i]=forec1[i];i=i+1}
+```
+
+```{r, echo=FALSE}
+par(mfrow=c(1,1),col="green", las=2)
+plot(temps2,type="l",col="purple",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temps2),by=18)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+```{r,echo=TRUE}
+l<-length(temps2)
+i=1
+while(i<=l){if(is.na(temps2[i])){print(i)};i=i+1}
+```
+
+It seems that the first part of data (up the next gap) has been filled properly.
+
+## Data supplementation - part 2
+
+```{r,echo=FALSE}
+#par(mfrow = c(2, 1))    
+acf(temps2,36,drop.lag.0 = TRUE)       # q for MA(q)
+
+```
+
+```{r,echo=FALSE}
+pacf(temps2,36)                          # p for AR(p)
+```
+
+Number of observations equals 434 this time, and $log(434)\approx6.07$, so maximal rank for AR and MA is 6. The above plots suggest us use the maximal available ranks in the auto.arima function. Again, are we to stand by ARMA model or rather choose ARIMA one?
+
+```{r}
+ndiffs(temps2)
+```
+
+ARMA is our choice, then.
+
+```{r,echo=FALSE}
+temps2.autoARMA<-auto.arima(temps2,d=0,max.p=6,max.q=6,stepwise=TRUE,ic="aic")#stepwise = TRUE;ic = c("aicc", "aic", "bic")
+par(mfrow = c(1, 1))
+print(temps2.autoARMA)
+```
+
+We obtain ARMA(2,1) as the best model. Let's calculate the forecast.
+
+```{r,echo=FALSE}
+plot(forecast(temps2.autoARMA,h=10))
+```
+
+Next step would be filling the gap in the series with the latest forecast.
+
+```{r}
+forec2<-forecast(temps2.autoARMA,h=10)$mean
+temps3<-temp[1:457]
+l<-length(forec2)
+i=1
+while(i<=l){temps3[434+i]=forec2[i];temp[434+i]=forec2[i];i=i+1}
+```
+
+```{r,echo=FALSE}
+par(mfrow=c(1,1),col="green", las=2)
+plot(temps3,type="l",col="purple",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temps3),by=18)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+Now it seems we were right. The previous gap in data set was forecasted by model trained on too few records. This time the gap was filled with more sensible values.
+
+Now we are going to check, what are the indices of the left NANs in the entire time series.
+
+```{r}
+l<-length(temp)
+i=1
+while(i<=l){if(is.na(temp[i])){print(i)};i=i+1}
+```
+
+These indices build set {458,...,468} U {543,...,553}. So there are two models left for us to build in order to fill the gaps in time series. Afterwards we are to build the final model trained on the entire data set.
+
+## Data supplementation - part 3
+
+```{r,echo=FALSE}
+#par(mfrow = c(2, 1))    
+acf(temps3,36,drop.lag.0 = TRUE)       # q for MA(q)
+```
+
+```{r,echo=FALSE}
+pacf(temps3,36)                          # p for AR(p)
+```
+
+```{r,echo=FALSE}
+print("ln(length(temps3))=")
+print(log(length(temps3)))
+print("ndiffs(temps3)=")
+ndiffs(temps3)
+```
+
+So we are going to find an ARMA model with AR and MA ranks not greater than 6.
+
+```{r,echo=FALSE}
+temps3.autoARMA<-auto.arima(temps3,d=0,max.p=6,max.q=6,stepwise=TRUE,ic="aic")#stepwise = TRUE;ic = c("aicc", "aic", "bic")
+par(mfrow = c(1, 1))
+print(temps3.autoARMA)
+```
+
+So we obtain an ARMA(2,1) model. What prediction does it calculate?
+
+```{r,echo=FALSE}
+plot(forecast(temps3.autoARMA,h=11))
+```
+
+```{r}
+forec3<-forecast(temps3.autoARMA,h=11)$mean
+temps4<-temp[1:468]
+l<-length(forec3)
+i=1
+while(i<=l){temps4[457+i]=forec3[i];temp[457+i]=forec3[i];i=i+1}
+```
+
+```{r,echo=FALSE}
+par(mfrow=c(1,1),col="green", las=2)
+plot(temps4,type="l",col="purple",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temps4),by=24)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+## Data supplementation - part 4
+
+```{r,echo=FALSE}
+#par(mfrow = c(2, 1))    
+acf(temps4,36,drop.lag.0 = TRUE)       # q for MA(q)
+```
+
+```{r,echo=FALSE}
+pacf(temps4,36)                          # p for AR(p)
+```
+
+```{r,echo=FALSE}
+print("ln(length(temps4))=")
+print(log(length(temps4)))
+print("ndiffs(temps4)=")
+ndiffs(temps4)
+```
+
+Again, we are going to find an ARMA model with AR and MA ranks not greater than 6.
+
+```{r,echo=FALSE}
+temps4.autoARMA<-auto.arima(temps4,d=0,max.p=6,max.q=6,stepwise=TRUE,ic="aic")#stepwise = TRUE;ic = c("aicc", "aic", "bic")
+par(mfrow = c(1, 1))
+print(temps4.autoARMA)
+```
+
+Again we obtain an ARMA(2,1) model.
+
+```{r,echo=FALSE}
+plot(forecast(temps4.autoARMA,h=10))
+```
+
+```{r}
+forec4<-forecast(temps4.autoARMA,h=11)$mean
+l<-length(forec4)
+i=1
+while(i<=l){temp[542+i]=forec4[i];i=i+1}
+```
+
+Now we can take a look at the plot of the entire time series that we have just supplemented with some predictions.
+
+```{r,echo=FALSE}
+par(mfrow=c(1,1),col="green", las=2)
+plot(temp,type="l",col="purple",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temp),by=30)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+Unfortunately, some of the forecasted (supplied) values do not meet our expectations. However, there are almost 800 observations in the entire time series, so those several values should not be a big deal.
+
+Now, for the last time, we are going to check, if there are no NANs left in the series.
+
+```{r, echo=TRUE}
+l<-length(temp)
+i=1
+while(i<=l){if(is.na(temp[i])){print(i)};i=i+1}
+```
+
+There are no NANs left, so we can focus on the main part of the project. :D
+
+# Full time series analysis
+
+## Stationarity
+
+```{r, echo=TRUE}
+# TESTOWANIE STACJONARNOŚCI
+adf.test(temp)  #H1 stwierdza stacjonarność, więc ją mamy bo p<0.05, odrzucamy H0
+kpss.test(temp) #H1 to brak stacjonarności
+pp.test(temp)   #H1 to stacjonarność
+```
+
+All the tests confirm stationarity of the series temp.
+
+## Decomposition
+
+Let's recall plots of data, autocorrelation and partial autocorrelation functions.
+
+```{r,echo=FALSE}
+#plot(temp, type="l")
+tsdisplay(temp)      
+```
+
+As well in the pure data as in the ACF we can observe strong seasonality, but it seems there is no trend. Now we are going to examine the situation by decomposing the series.
+
+```{r,echo=FALSE}
+temp_ts <- ts(temp, frequency=12)  # freq= 12, cause period=year=12 months=12 records
+plot(decompose(temp_ts))#decomposition
+#plot(stl(temp_ts,s.window="periodic"))
+```
+
+We can see that trend and residuals have significantly greater variation in the intervals that we forecasted with first models.
+
+Now we are going to take a look at decomposed parts apart.
+
+```{r,echo=FALSE}
+plot(decompose(temp_ts)$trend)
+```
+
+We do not observe here any trend. According to the climate warming we expected to see some trend. But it would not be easy to find in the entire data. We should check a particular month across all the years - for example plot values for every January. Let's do it, then. Our choice is January (as the warmest month in Antarctica) and August (as the coldest month in Antarctica).
+
+```{r}
+l<-length(temp) 
+jan<-list() # the warmest
+aug<-list() # the coldest
+NofYears<-length(temp)/12
+years<-list()
+for(k in 0:NofYears-1){jan[k+1]=temp[12*k+1]; aug[k+1]=temp[12*k+8]; years[k+1]=k+1}
+```
+
+```{r,echo=FALSE}
+par(mfrow=c(2,1))
+plot(years,jan, type="l",col="green")
+plot(years,aug, type="l",col="darkgreen")
+```
+
+We do not observe any trend in the above data.
+
+Now we are going to check seasonality in the main time series.
+
+```{r,echo=FALSE}
+plot(decompose(temp_ts)$seasonal)
+```
+
+Now we are going to drop seasonality. The period of this seasonality (length of one season) is 12 months that is 12 records..
+
+```{r, echo=TRUE}
+nsdiffs(ts(temp, frequency=12))
+#wychodzi jedynka, czyli trzeba uwzględnić różnicowanie 
+#na jednym pełnym okresie (diff,lag=12)
+```
+
+Here, output equal to 1 means that we should use the diff function with one season lag in order to drop seasonality. Firstly let's take a look at the original data.
+
+```{r,echo=FALSE}
+par(mfrow=c(1,1),col="green", las=2)
+plot(temp,type="l",col="darkorange",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temp),by=30)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+Next plot presents data with the seasonality dropped. This new time series is named ready_temp.
+
+```{r,echo=FALSE}
+ready_temp<-diff(temp,lag=12)
+par(mfrow=c(1,1),col="green", las=2)
+plot(ready_temp,type="l",col="red",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temp),by=30)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+By using decomposition again (this time on the ready_temp series) we are going to check whether there is any seasonality left.
+
+```{r,echo=FALSE}
+ready_ts <- ts(ready_temp, frequency=12)  
+plot(decompose(ready_ts))
+#plot(stl(ready_ts,s.window="periodic"))
+```
+
+Let's take a look at the seasonality itself. We are going to plot values only for years 1978-1987, because full time series would be unreadable.
+
+```{r,echo=FALSE}
+ready_temp_ts <- ts(ready_temp, frequency=12)
+plot(decompose(ready_temp_ts)$seasonal[240:360], type="l")
+```
+
+As we can see, now the seasonal part of the series has quite insignificant scale (values between -0.1 and 0.07) and irregular shape within every single period. Due to that we can say that no seasonality occurs here.
+
+# Choosing the best model
+
+Let's take a look at the ACF and PACF plots after removing seasonality from the time series.
+
+```{r,echo=FALSE}
+#par(mfrow = c(2, 1))    
+#acf(temps,24,drop.lag.0 = TRUE)       
+#pacf(temps,24)                          
+acf(ready_temp,72,drop.lag.0 = TRUE)       # q for MA(q)
+```
+
+We observe a significant improvement here, because now the ACF needs only 13 steps until it decreases significantly close to zero. Unfortunately, 13 steps would still be too many to consider as rank of AR or MA equations, because $log(NumOfObserv)\approx 6.674<13$ .
+
+```{r,echo=FALSE}
+pacf(ready_temp,72)                          # p for AR(p)
+```
+
+When it comes to this plot, situation is analogical, although the PACF decreases much later.
+
+```{r, echo=TRUE}
+# calculating the "d" parameter for ARIMA(p,d,q)
+ndiffs(ready_temp)
+#nsdiffs(ready_temp_ts)
+```
+
+Hence, we are going to build clear ARMA model.
+
+Our first check is going to be the model given by the auto.arima function when max.p=max.q=6.
+
+```{r,echo=FALSE}
+model<-auto.arima(ready_temp,d=0,max.p=6,max.q=6,stepwise=TRUE,ic="aic")
+print(model)
+auto.arima(ready_temp,d=0,max.p=6,max.q=6,stepwise=TRUE,ic="bic")
+```
+
+We obtain the same model as the best according to two criteria.
+
+Now we are going to build an analyse a few models we find reasonable.
+
+```{r}
+model66<-arima(ready_temp, order = c(6, 0,6),method ="ML")
+model11<-arima(ready_temp, order = c(1, 0,1),method ="ML")
+model12<-arima(ready_temp, order = c(1, 0,2),method ="ML")
+model31<-arima(ready_temp, order = c(3, 0,1),method ="ML")
+model33<-arima(ready_temp, order = c(3, 0,3),method ="ML")
+model23<-arima(ready_temp, order = c(2, 0,3),method ="ML")
+model32<-arima(ready_temp, order = c(3, 0,2),method ="ML") # auto.arima
+```
+
+First thing to check would be the Akaike criterion.
+
+```{r,echo=FALSE}
+print("ARMA(6,6)")
+print(model66$aic)
+print("ARMA(1,1)")
+print(model11$aic)
+print("ARMA(1,2)")
+print(model12$aic)
+print("ARMA(3,1)")
+print(model31$aic)
+print("ARMA(3,3)")
+print(model33$aic)
+print("ARMA(2,3)")
+print(model23$aic)
+print("ARMA(3,2), auto.arima")
+print(model32$aic)
+```
+
+Next step is to find zeros of AR-polynomial and MA-polynomial for the above models, and compare them to 1 in order to check if the models (processes) are causal and invertible.
+
+```{r}
+autoplot(model66)# causal uninvertible  
+autoplot(model11)# causal invertible 
+autoplot(model12)# causal invertible
+autoplot(model31)# causal invertible 
+autoplot(model33)# causal uninvertible 
+autoplot(model23)# causal uninvertible 
+autoplot(model32)# causal invertible     auto.arima
+```
+
+Among all the causal and invertible models ARMA(3,2) is the one with the smallest (the best) Akaike criterion value. So we choose this one and are going to analyse it.
+
+# Best model analysis
+
+## Residuals
+
+Now we are going to analyse the residuals of the model.
+
+```{r,echo=FALSE}
+par(mfrow=c(1,1),col="green", las=2)
+plot(model32$residuals,type="l",col="darkorange",xlab = "",axes=FALSE)
+scale<-seq(from=1, to=length(temp),by=30)
+axis(side=1,cex.axis=0.8,at=scale,padj=1,labels=time[scale])
+axis(2)
+```
+
+The residuals are relatively big and their amplitude is not small either. Below we can see the density of their empirical distribution.
+
+```{r,echo=TRUE}
+plot(density(model32$residuals))
+```
+
+It looks similar to plot of normal distribution's density. Let's take a look at the Q-Q plot.
+
+```{r, echo=FALSE}
+qqnorm(model32$residuals)
+qqline(model32$residuals)
+```
+
+The tails are a bit too fat for normal distribution. Next step is checking normality and independence with some classical tests.
+
+```{r, echo=TRUE}
+shapiro.test(model32$residuals)
+# H0: normality
+```
+
+The residuals are not normally distributed.
+
+```{r, echo=TRUE}
+randtests::runs.test(as.vector(model32$residuals))#$p.value
+# H0: independence
+```
+
+Independence rejected.
+
+Let's check the correlation between residuals with the Ljung-Box test.
+
+```{r, echo=TRUE}
+Box.test(model32$residuals,lag=floor(log(length(model32$residuals))),type="Ljung")
+# H0: no autocorre
+```
+
+The residuals are not correlated significantly.
+
+What is the expectation and variance of the residuals?
+
+```{r, echo=TRUE}
+mean(model32$residuals)
+var(model32$residuals)
+```
+
+According to definition of an ARMA process, the expectation should equal 0. In this model it is quite close to 0. We accept it. The variance is going to be used a bit later.
+
+## Parameters
+
+The ARMA(3,2) type model which we called model32 has the following parameters.
+
+```{r,echo=FALSE}
+model32
+```
+
+Let's calculate the mean of the ARMA process.
+
+```{r}
+mean(ready_temp)
+```
+
+It is relatively close to 0, so we are going to put $\mu=0$ in the model equation. The equation of the process is following.
+
+$$
+X_t-0.4894\cdot X_{t-1}+0.8657\cdot X_{t-2}-0.1952\cdot X_{t-3}=-0.0075+a_t-0.1227\cdot a_{t-1}+0.9278\cdot a_{t-2}
+$$
+
+where $\{a_t\}\sim WN(0,15.80289)$.
+
+For the above parameters one can calculate the confidence intervals.
+
+```{r, echo=TRUE}
+confint(model32, level=0.95)
+```
+
+Interpretation of the 95% confidence intervals for chosen parameters:
+
+-   $(0.3839704; 0.59475370)$ is one of the random intervals which contain (with probability 0.95) the unknown value of the parameter $\phi_1$.
+-   $(-0.1941013; -0.05129009)$ is one of the random intervals which contain (with probability 0.95) the unknown value of the parameter $\theta_1$.
+
+# Summary
+
+First step of the project was finding gaps in time series. We supplied them by forecasts of supplementary models. Then we checked stationarity, trend and seasonality of the series. Particular tests confirmed stationarity. We did not find any trend, however we found dropped strong seasonality.
+
+Among all the causal and invertible processes we chose the one with the lowest Akaike criterion value. We analysed residuals of the model. There was no normality, mean close to 0, no correlation, but also no independence. For the estimated parameters (coefficients of the AR and MA equations) we calculated and interpreted confidence intervals.
