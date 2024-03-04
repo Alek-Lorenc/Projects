@@ -1,0 +1,650 @@
+---
+title: "Classification problem for wine quality evaluation"
+author: "Weronika Błońska, Aleksander Lorenc, Bartłomiej Szymczyk"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+\
+Most of us have faced a choice what wine should we choose and whether their are worth their price. Experts in the wine field could be biased by their own preferences while evaluating quality of wines which could lead to wrong classifications and pricing. That is why we decided to try to build models based on machine learning algorithms to predict quality of any wine. Such a model, based on only physicochemical properties, could be useful in supporting wine tasting evaluations by experts and improving wine production. Additionally, it could assist in marketing by modeling the taste preferences of consumers in a given market.
+
+Dataset used in project was acquired from <https://www.kaggle.com/datasets/uciml/red-wine-quality-cortez-et-al-2009>. It refers to the red variant of the Portugeese "Vinho Verde" wine.
+
+The presented dataset contains the results of physicochemical analyses of red wines conducted during the certification stage. The mentioned wine quality assessment process consists of two types of physicochemical and sensory tests.
+
+In this context, we propose a data exploration approach to predict human taste preferences based on easily accessible results of physicochemical analyses. In the dataset we can find 1599 observations as results of physicochemical analyses. Wine were evaluated in 11 different categories, which we will use as input variables. Those are:
+
+-   fixed acidity (fa) - measured in $g(\textit{tartaric acid})/dm^3$
+
+-   volatile acidity (va) - amount of acetic acid in wine; at too high a concentration, it can lead to an unpleasant, vinegary taste, measured in $g(\textit{acetic acid})/dm^3$
+
+-   citric acid (ca) - occurring in small quantities; citric acid can add "freshness" and flavor to wines, measured in $g/dm^3$;
+
+-   residual sugar (rs) - amount of sugar remaining after fermentation stops; wines with less than $1$ $gram/liter$ are rare, and wines with more than $45$ $\textit{grams/liter}$ are considered sweet ($g/dm^3$)
+
+-   chlorides (ch) - amount of salt in the wine $(g(\textit{sodium chloride})/dm3)$
+
+-   free sulfur dioxide (fsd) - prevents microbial growth and oxidation of wine ($mg/dm^3$)
+
+-   total sulfur dioxide (tsd) - the amount of free and bound forms of SO2; at low concentrations, SO2 is usually undetectable in wine, but at a free SO2 concentration above 50, it becomes noticeable in the nose and taste of the wine. ($mg/dm^3$)
+
+-   density (d) - ($g/cm^3$)
+
+-   pH (ph) - describing how acidic or alkaline the wine is on a scale from 0 (very acidic) to 14 (very alkaline). Most wines have a pH between 3 and 4.
+
+-   sulphates (s) - $g(\textit{potassium sulphate})/dm^3$
+
+-   alcohol (a) - Alcohol (% vol.), the percentage of alcohol content in the wine.
+
+Wines were given a mark during an evaluation describing their quality rated from 0 to 10. Our idea was also to make additional quality measure - sometimes we only want to know whether a wine tastes good or bad, so we added additional rating. We treat them as two different output variables:
+
+-   quality (Q1) - rating from 0 to 10
+
+-   binary quality (Q2) - rated 0 for bad and 1 for good.
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+library("openxlsx")
+library("moments")
+library("corrplot")
+library("ellipse")
+library("randtests")
+library("VGAM")
+library("nnet")
+library("leaps")
+library("faraway")
+library("pROC")
+library("ROCR")
+library("recipes")
+library("caret")
+library("car")
+library("naniar")
+library("dplyr")
+library("modelr")
+library("ggplot2")
+library("gdata")
+library("GGally")
+library("rpart")
+library("rpart.plot")
+library("randomForest")
+```
+
+```{r}
+wine <- read.xlsx("WQA_DATA.xlsx")
+```
+
+We change the columns' names so they will be easier to use.
+
+```{r}
+colnames(wine) <- c("Q1", "Q2", "fa", "va", "ca", "rs", "ch", "fsd", "tsd", "d", "ph", "s","a")
+
+```
+
+# Analysing the dataset
+
+First, let's take a look at the summary of our dataset.
+
+```{r}
+summary(wine)
+```
+
+As we can see, some of the variables have quite big amplitudes, comparing to their means.\
+Now, we can show a correlation plot based on correlation matrix between variables in the dataset.
+
+```{r}
+corrplot(cor(wine))
+```
+
+As we can observe, for example, variables volatile aciditiy and alcohol have somewhat significant correlation with quality. Whereas strong correlation can be observed between exemplary pairs of variables: fixed acidity and density, citric acid and pH.
+
+# Data preprocessing
+
+Now we are going to focus on our dataset. We would like to preprocess it to ensure models built on them will not be biased and give more realistic results.
+
+## Missing values
+
+Firstly, we check whether it contains any empty records aka NAs.
+
+```{r}
+which(is.na(wine))
+```
+
+Fortunately, there are no empty records.
+
+## Data types
+
+Now we want to examine data types in our set and change them if needed.
+
+```{r}
+str(wine)
+```
+
+All columns are numerical. Now we change the type of the variable Q2, so that the program would see it as a factor.
+
+```{r}
+wine$Q2 = factor(wine$Q2)
+```
+
+Next step is recalculating all the variables, so they all are expressed in $g/dm^3$. We need to scale tsd, fsd, d and a, as the first two were given in $mg/dm^3$, the third one in $g/cm^3$ and the last one in %.
+
+```{r}
+wine$tsd = wine$tsd * 0.001
+
+wine$fsd = wine$fsd * 0.001
+
+wine$d = wine$d * 1000
+
+wine$a = (wine$a/100 * 0.789)*1000
+```
+
+## Outliers
+
+When types of variables are prepared for further steps, now we need to look for outlying observations. We use boxplots to find them.
+
+```{r, echo=FALSE}
+par(mfrow = c(1,3))
+boxplot(wine$fa)
+boxplot(wine$va)
+boxplot(wine$ca)
+boxplot(wine$rs)
+boxplot(wine$ch)
+boxplot(wine$fsd)
+boxplot(wine$tsd)
+boxplot(wine$d)
+boxplot(wine$ph)
+boxplot(wine$s)
+boxplot(wine$a)
+```
+
+We can see that there are quite many outliers. To recognize and enlist them properly, we are using IQR method, i.e. interquartile range of the predictors.
+
+```{r}
+vars <- c("fa", "va", "ca", "rs", "ch", "fsd", "tsd", "d", "ph", "s", "a")
+outliers <- c()
+for(i in vars){
+  max <- quantile(wine[, i], 0.75) + (IQR(wine[, i]) * 1.5)
+  min <- quantile(wine[, i], 0.25) - (IQR(wine[, i]) * 1.5)
+  id <- which(wine[, i] < min | wine[, i] > max)
+  outliers <- c(outliers, id) 
+}
+outliers <- sort(unique(outliers))
+length(outliers)
+```
+
+Once found (around 25% of the entire dataset), they have to be excluded from our dataset.
+
+```{r}
+wineout = data.frame()
+wineout <- wine[-outliers,]
+```
+
+Now we can again check boxplots to see how the data looks after removing the outliers.
+
+```{r, echo=FALSE}
+par(mfrow = c(1,3))
+boxplot(wineout$fa)
+boxplot(wineout$va)
+boxplot(wineout$ca)
+boxplot(wineout$rs)
+boxplot(wineout$ch)
+boxplot(wineout$fsd)
+boxplot(wineout$tsd)
+boxplot(wineout$d)
+boxplot(wineout$ph)
+boxplot(wineout$s)
+boxplot(wineout$a)
+```
+
+There are still a few outliers, but they may occur due to the nature of their distribution.
+
+Here we add a pair plot to see how variables divided by binary quality interact with each other.
+
+```{r,  message = FALSE}
+ggpairs(wineout[,-c(5,7,9)], ggplot2::aes(colour = Q2))
+```
+
+## Data Calibration
+
+Since we are going to build a couple of diverse models, we need to prepare data frames without Q1 or Q2 values, respectively.
+
+```{r}
+linwine = wineout[,-2]
+logwine = wineout[,-1]
+treewine = wineout[,-1]
+```
+
+Next step is re-scaling the values of our variables with the min-max method.
+
+```{r, include=FALSE}
+min_max_norm <- function(x) {
+(x - min(x, na.rm = T)) / (max(x, na.rm = T) - min(x, na.rm = T))
+}
+```
+
+```{r}
+logwine$fa = min_max_norm(logwine$fa)
+logwine$va = min_max_norm(logwine$va)
+logwine$ca = min_max_norm(logwine$ca)
+logwine$rs = min_max_norm(logwine$rs)
+logwine$ch = min_max_norm(logwine$ch)
+logwine$fsd = min_max_norm(logwine$fsd)
+logwine$tsd = min_max_norm(logwine$tsd)
+logwine$d = min_max_norm(logwine$d)
+logwine$ph = min_max_norm(logwine$ph)
+logwine$s = min_max_norm(logwine$s)
+logwine$a = min_max_norm(logwine$a)
+```
+
+After completing preprocessing, we can move to building models.
+
+# Multiple Regression Model
+
+We start with multiple regression to get the first impression of the problem and discuss its results shortly. Let's begin with the full model.
+
+```{r, echo=FALSE}
+model1<-lm(Q1~., data = linwine)
+summary(model1)
+extractAIC(model1)
+```
+
+As we can see, quite many used variables are statistically significant (i.e. many stars). Next we use a function 'step' to search for the model with the lowest AIC.
+
+```{r, echo=FALSE}
+step = stats::step(model1, method = both, trace = 0)
+step$anova
+```
+
+We remove from the full model following variables: rs, fa, d and ch. We also extract fsd which was not a significant predictor in the model.
+
+```{r, echo=FALSE}
+model2<-lm(Q1~va+ca+tsd+ph+s+a, data = linwine)
+summary(model2)
+extractAIC(model2)
+```
+
+As we can see, adjusted coefficient of determination $R_a^2=38,69\%$ did not change, and we got lower than before $AIC=-1212.31$.
+
+We tried a few other ways to find the best model (for example Mallow's Cp criterion, removing colinear predictors) and every output was the same as or worse than the current one, so we resign from attaching them here.
+
+## Normality of Residuals
+
+To be able to conclude from the linear regression model, we have to check normality of its' residuals.
+
+```{r, echo=FALSE}
+plot(linwine$Q1, model2$residuals)
+abline(h = 0, col = "red")
+```
+
+```{r, echo=FALSE}
+shapiro.test(model2$residuals)
+```
+
+We can observe that there is a lack of normality in the residuals of the model, one of the main assumptions of Classical Normal Linear Regression Model. Due to this fact, we will not include this model in conclusion.
+
+# Splitting dataset into training and test subsets
+
+In order to test future models we split our data into two subsets: a training one equal to 70% of the data and testing one equal to 30% of observations.
+
+```{r}
+set.seed(18901229)
+```
+
+```{r}
+setlog<- resample_partition(logwine, c(train = 0.7, test = 0.3))
+logtrain <- as.data.frame(setlog$train)
+logtest <- as.data.frame(setlog$test)
+```
+
+```{r}
+settree <- resample_partition(treewine, c(train = 0.7, test = 0.3))
+treetrain <- as.data.frame(settree$train)
+treetest <- as.data.frame(settree$test)
+```
+
+# Logistic Regression
+
+Using the training-dataset we build a logistic regression model. Firstly, with all the variables.
+
+```{r, echo=FALSE}
+logistic1 = glm(Q2~fa+va+ca+rs+ch+fsd+tsd+d+ph+s+a, family = binomial, data = logtrain) 
+summary(logistic1)
+```
+
+Let's check the AIC for the model, when we remove the d, fsd and rs variables (statistically the least significant ones, i.e. the ones without stars).
+
+```{r, echo=FALSE}
+logistic2 = glm(Q2~fa+va+ca+ch+tsd+ph+s+a, family = binomial, data = logtrain) 
+summary(logistic2)
+```
+
+Having removed the fa variable, we could observe increase of the AIC and deviance, as well two variables lose significance, so we decide not to remove it.
+
+What is more, the step method gives us the same model as the best, so we resign from attaching it here.
+
+## Model Evaluation
+
+Next, we would like to check, if the model is balanced well.
+
+```{r, echo=FALSE}
+pred1 <- ifelse(predict(logistic2, type = "response")>0.5, 1, 0)
+pred1 <- as.factor(pred1)
+cM1 = confusionMatrix(pred1, logtrain$Q2, positive = "1" , mode = "everything")
+cM1
+```
+
+It looks like the model indeed is well balanced. The accuracy equals almost 75%, and most of important measures are above 70%.
+
+Now we check is the ROC curve plotting and Area Under Curve measure.
+
+```{r, message=FALSE, echo=FALSE}
+response1 = logtrain$Q2
+predict1 = predict(logistic2, type = "response")
+auc = round(auc(response1, predict1),4)
+ggroc(roc(response1, predict1), colour = 'steelblue', size = 2) +
+    ggtitle(paste0('ROC Curve ', '(AUC = ', auc*100, '%)')) +
+    theme_minimal()+
+    geom_abline(slope=1, intercept = 1, lty = 2)
+```
+
+From the graph we see that $AUC=82.01\%$, which suggests model is well-fitted.
+
+Below, using a Kolmogorov-Smirnov statistic, we check the division between the positive and negative values.
+
+```{r}
+pred = prediction(predict(logistic2, type = "response"), logtrain$Q2)
+perf <- performance(pred, "tpr", "fpr")
+ks <- max(perf@y.values[[1]] - perf@x.values[[1]])
+ks
+```
+
+It is slightly bigger than 50%, which in practice is enough to say they are diverse. We add also a graphical interpretation of this result.
+
+```{r, echo=FALSE}
+d0 <- data.frame(
+       score = as.vector(predict1)[logtrain$Q2 == 0],
+       true_result = 'bad')
+d1 <- data.frame(
+       score = as.vector(predict1)[logtrain$Q2 == 1],
+       true_result = 'good')
+d <- rbind(d0, d1)
+
+cumDf0 <- ecdf(d0$score)
+cumDf1 <- ecdf(d1$score)
+x <- sort(d$score)
+cumD0 <- cumDf0(x)
+cumD1 <- cumDf1(x)
+diff <- cumD0 - cumD1
+y1  <- gdata::first(cumD0[diff == max(diff)])
+y2  <- gdata::first(cumD1[diff == max(diff)])
+x1  <- x2 <- quantile(d0$score, probs=y1, na.rm=TRUE)
+
+p <- ggplot(d, aes(x = score)) +
+     stat_ecdf(geom = "step", aes(col = true_result), lwd=2) +
+     ggtitle('Cummulative distributions and KS') +
+     geom_segment(aes(x = x1, y = y1, xend = x2, yend = y2), 
+                  color='navy', lwd = 3) + 
+     ggplot2::annotate("text", 
+              label = paste0("KS=",round((y1-y2)*100,2),"%"), 
+              x = x1 + 0.15, y = y2+(y1-y2)/2, color = "navy")
+p
+```
+
+## Searching for the optimal cut-off threshold
+
+We would like to experiment with the threshold, as our previous choice was arbitral, even naive.
+
+Firstly, we do not have any requirements from the compatibility of the model to the data. The most optimal threshold in this case would be the one that maximizes the difference TPR-FPR. Of course it belongs to the ROC curve and is located the closest to the (0,1) point.
+
+```{r, message=FALSE}
+r <- roc(response1, predict1)
+tsh = coords(r, "best", ret = "threshold")
+tsh
+```
+
+As we can see, it is close to our first proposal, as it differs by 0.03. We can check the confusion matrix for a prediction with the new threshold.
+
+```{r, echo=FALSE}
+pred2 <- ifelse(predict(logistic2, type = "response")>tsh[1,1], 1, 0)
+pred2 <- as.factor(pred2)
+cM2 = confusionMatrix(pred2, logtrain$Q2, positive = "1" , mode = "everything")
+cM2
+```
+
+We can see improvement over the previous results. Namely, the F1 score, accuracy, sensitivity, recall and FPR have greater values, while precision and specificity - lower.
+
+Secondly, we require from our model to have small amount of FP and still be able to predict the output well. Therefore, we need to maximize specificity keeping accuracy high.
+
+```{r, echo=FALSE}
+perf <- performance(pred, "acc", "spec")
+roc_data <- data.frame(
+  threshold = attr(perf, "alpha.values")[[1]],
+  accuracy = attr(perf, "y.values")[[1]],
+  specificity = attr(perf, "x.values")[[1]]
+)
+
+ggplot(roc_data, aes(x = threshold)) +
+  geom_line(aes(y = accuracy, color = "Accuracy"), lwd = 1.5) +
+  geom_line(aes(y = specificity, color = "Specificity"), lwd = 1.5) +
+  labs(title = "Accuracy and Specificity Plot",
+       x = "Threshold",
+       y = "Value") +
+  scale_color_manual(values = c("Accuracy" = "red", "Specificity" = "blue")) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+From the above plot, we arbitrarily decide the cut-off level should equal $0.7$. This particular choice comes from the below observations. Now let's check the confusion matrix and its' parameters.
+
+```{r, echo=FALSE}
+pred3 <- ifelse(predict(logistic2, type = "response")>0.7, 1, 0)
+pred3 <- as.factor(pred3)
+cM2 = confusionMatrix(pred3, logtrain$Q2, positive = "1" , mode = "everything")
+cM2
+```
+
+We consider the target met, since the specificity is quite high and accuracy is close to $70 \%$.
+
+## Model for test data - evaluation
+
+Next step would be the testing of our logistic regression model, keeping the last threshold.
+
+```{r, echo=FALSE}
+coś = ifelse(predict(logistic2, newdata = logtest, type = "response")>0.7,1,0)
+coś = as.factor(coś)
+cośie = confusionMatrix(coś, logtest$Q2, positive = "1" , mode = "everything")
+cośie
+logcM = cośie
+```
+
+All the parameters grew, so we find the model matching the data very well. Next step is checking the ROC and AUC curves.
+
+```{r, message=FALSE, echo=FALSE}
+response2 = logtest$Q2
+predict2 = predict(logistic2, newdata = logtest, type = "response")
+auc2 = round(auc(response2, predict2),4)
+ggroc(roc(response2, predict2), colour = 'steelblue', size = 2) +
+    ggtitle(paste0('ROC Curve ', '(AUC = ', auc2*100, '%)')) +
+    theme_minimal()+
+    geom_abline(slope=1, intercept = 1, lty = 2)
+```
+
+There are no big changes, we accept this situation.
+
+Usually, one observes bigger decrease in model performance's measures than in our case. It means that created model is indeed well-fitted.
+
+# Decision tree
+
+For another type of model we decided to construct a decision tree. Let's build one, using the function rpart.
+
+```{r}
+tree_model1 <- rpart(Q2 ~ ., data = treetrain, method = "class", minsplit=50, minbucket = 20, cp=0.0001)
+plotcp(tree_model1)
+```
+
+We can observe relative error stabilizes after the cp exceeds 0.001. It also suggests that the best choice for cp could be 0.015. Let's check the tree summary.
+
+```{r, echo=FALSE}
+printcp(tree_model1)
+```
+
+The tree does not use the variables ph, fsd, ch and ca (most of which we did not use in logistic regression model), but it uses d, a and rs (which we excluded from our model before).
+
+Maybe for different parameters we can get a bit better tree. Therefore we change them a bit.
+
+```{r}
+tree_model2 <- rpart(Q2 ~ ., data = treetrain, method = "class", minsplit = 20,minbucket = 5, cp=0.0001)
+plotcp(tree_model2)
+```
+
+We are observing an improvement here as relative error is lower and the best choice for cp could be 0.0099. However, there is no need to create a bigger tree as after 20 leaves relative error rises. Let's check the variables used by this tree.
+
+```{r, echo=FALSE}
+printcp(tree_model2)
+```
+
+Surprisingly, this tree uses all possible variables, which could lead to overfitting problem.
+
+## Search for a better model
+
+Now, to choose a better decision tree model, we check confusion matrices and AUC scores. First, for the tree_model1.
+
+```{r, echo=FALSE}
+tree_pred1 <- predict(tree_model1, type = "class")
+treecM1 <- confusionMatrix(data = factor(tree_pred1), reference = factor(treetrain$Q2), mode = "everything")
+treecM1
+```
+
+```{r, message=FALSE}
+auc1 = round(auc(treetrain$Q2, as.numeric(tree_pred1)),4)
+auc1
+```
+
+Second, for the tree_model2 - with all variables.
+
+```{r, echo=FALSE}
+tree_pred2 <- predict(tree_model2, type = "class")
+treecM2 <- confusionMatrix(data = factor(tree_pred2), reference = factor(treetrain$Q2), mode = "everything")
+treecM2
+```
+
+```{r, message=FALSE}
+auc2 = round(auc(treetrain$Q2, as.numeric(tree_pred2)),4)
+auc2
+```
+
+Having compared metrics for both models we can say that the second one is better. What is left to do in the searching process is to evaluate on the testing data.
+
+## Evaluation on testing data
+
+We want to evaluate performance of our trees on the testing dataset and choose a better model. First, for the tree_model1:
+
+```{r, echo=FALSE}
+test_tree_pred1 <- predict(tree_model1, newdata = treetest, type = "class")
+test_treecM1 <- confusionMatrix(data = factor(test_tree_pred1), reference = factor(treetest$Q2), mode = "everything")
+test_treecM1
+```
+
+```{r, message=FALSE, echo=FALSE}
+test_auc1 = round(auc(treetest$Q2, as.numeric(test_tree_pred1)),4)
+test_auc1
+```
+
+Absolute difference between results on testing and training data for this model is around 9,5% for AUC, accuracy 8,81%, 5,5% for specificity and for F1 -12%.
+
+Now, for the second decision tree:
+
+```{r, echo=FALSE}
+test_tree_pred2 <- predict(tree_model2, newdata = treetest, type = "class")
+test_treecM2 <- confusionMatrix(data = factor(test_tree_pred2), reference = factor(treetest$Q2), mode = "everything")
+test_treecM2
+```
+
+```{r, message=FALSE, echo=FALSE}
+test_auc2 = round(auc(treetest$Q2, as.numeric(test_tree_pred2)),4)
+test_auc2
+```
+
+Exemplary absolute differences are: for AUC 14,36%, for accuracy 14%, 17% for F1, and for specificity 12,3%.
+
+Both models face the problem of overfitting. Despite bigger decreases of statistics for the second model, we still obtain higher values for it on the testing data. Due to this fact, we consider tree_model2 better.
+
+## Plotting and interpretating the tree
+
+We want to plot the tree created by the chosen model.
+
+```{r, echo=FALSE}
+plot(tree_model2)
+text(tree_model2)
+```
+
+We are going to improve it a bit.
+
+```{r}
+tree2 <- prune(tree_model2, cp = 0.0099)
+rpart.plot::prp(tree2, type = 5, extra = 8, box.palette = "auto",
+yesno = 1, yes.text="good",no.text="bad")
+```
+
+```{r}
+tree3 <- prune(tree_model2, cp = 0.015)
+rpart.plot::prp(tree3, type = 5, extra = 8, box.palette = "auto",
+yesno = 1, yes.text="good",no.text="bad")
+```
+
+Even now it is small, we are able to clearly read the results and interpret them. For example, if alcohol is greater or equal to 80, we can assume wine has good quality. Otherwise, we look at the left branch and determine amount of sulphates in wine. If there is less then 0.58 of them, wine is bad and so on...
+
+# Conclusion
+
+To sum up, we considered three types of models:
+
+1.  First one, linear regression, cannot be used formally, since we could not meet the assumption of normality of the residuals, as the p-value is less than 0.05.
+
+    ```{r, echo=FALSE}
+    shapiro.test(model2$residuals)
+    ```
+
+2.  For logistic regression model logistic2 was chosen as the best one with optimal cutoff level equal to 0.7.
+
+    ```{r}
+    summary(logistic2)
+    ```
+
+3.  In the decision tree model approach we considered two models, both with overfitting problem. The one which gave us a better result was tree_model2
+
+    ```{r}
+    printcp(tree_model2)
+    ```
+
+Comparing those two models we can observe, that tree_model2 uses all predictors from our dataset, whereas logistic2 removed density, free sulfur dioxides and residual sugars. We took under consideration confusion matrices and AUC of both models on testing data.
+
+```{r}
+logcM
+auc2
+```
+
+```{r}
+test_treecM2
+test_auc2
+```
+
+We add some measures to a table to have better view.
+
+```{r}
+compare = data.frame(c(auc2,test_auc2), c(0.7326 ,0.7298 ), c(0.9023,0.7711),c(0.8618,0.6993))
+colnames(compare) = c("AUC", "Accuracy", "Specificity", "Precision")
+rownames(compare) = c("logistic2", "tree_model2")
+compare
+```
+
+They both clearly get a better slut (<https://www.youtube.com/watch?v=qrxsceexTBw>) for logistic regression model, for example so we approve it recommendable.
